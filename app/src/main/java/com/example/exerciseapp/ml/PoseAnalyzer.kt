@@ -5,27 +5,31 @@ import androidx.annotation.OptIn
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageProxy
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.pose.Pose
 import com.google.mlkit.vision.pose.PoseDetection
 import com.google.mlkit.vision.pose.PoseDetector
 import com.google.mlkit.vision.pose.accurate.AccuratePoseDetectorOptions
-import com.google.mlkit.vision.pose.Pose
 
 class PoseAnalyzer {
 
-    private val poseDetector: PoseDetector by lazy {
+    private val poseDetector: PoseDetector
+
+    init {
         val options = AccuratePoseDetectorOptions.Builder()
             .setDetectorMode(AccuratePoseDetectorOptions.STREAM_MODE)
             .build()
-
-        PoseDetection.getClient(options)
-
+        poseDetector = PoseDetection.getClient(options)
     }
 
     @OptIn(ExperimentalGetImage::class)
     fun detectPose(imageProxy: ImageProxy, onPoseDetected: (Pose) -> Unit) {
-        val mediaImage = imageProxy.image ?: return
+        val mediaImage = imageProxy.image ?: run {
+            imageProxy.close()
+            return
+        }
 
-        val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+        val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+        val image = InputImage.fromMediaImage(mediaImage, rotationDegrees)
 
         poseDetector.process(image)
             .addOnSuccessListener { pose ->
