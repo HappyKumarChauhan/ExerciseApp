@@ -80,12 +80,12 @@ fun PoseOverlay(
 
         val landmarks = pose?.allPoseLandmarks?.associateBy { it.landmarkType } ?: emptyMap()
 
-        val faceColor = Color.Yellow
-        val torsoColor = Color.Green
-        val leftArmColor = Color.Red
-        val rightArmColor = Color.Blue
-        val leftLegColor = Color.Red
-        val rightLegColor = Color.Blue
+        val faceColor = Color.White
+        val torsoColor = Color.White
+        val leftArmColor = Color.White
+        val rightArmColor = Color.White
+        val leftLegColor = Color.White
+        val rightLegColor = Color.White
 
         // Face
         connect(landmarks[PoseLandmark.LEFT_MOUTH], landmarks[PoseLandmark.RIGHT_MOUTH], faceColor)
@@ -136,8 +136,8 @@ fun PoseOverlay(
 
         // --- Drawing Joint Angles ---
         val textPaint = android.graphics.Paint().apply {
-            color = android.graphics.Color.WHITE
-            textSize = with(density) { 16.sp.toPx() } // Adjust text size as needed
+            color = android.graphics.Color.BLACK
+            textSize = with(density) { 14.sp.toPx() } // Adjust text size as needed
             textAlign = android.graphics.Paint.Align.CENTER
         }
 
