@@ -18,19 +18,27 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import java.util.concurrent.Executor
+// Ensure these imports are present
+import java.util.concurrent.Executors
 
 @Composable
 fun CameraPreviewView(
     lensFacing: Int = CameraSelector.LENS_FACING_FRONT,
+    // The onImageAnalyzed lambda is now responsible for closing the ImageProxy
     onImageAnalyzed: (ImageProxy) -> Unit
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val executor: Executor = remember { ContextCompat.getMainExecutor(context) }
+
+    // Use a background executor for ImageAnalysis to prevent UI jank.
+    val analysisExecutor: Executor = remember { Executors.newSingleThreadExecutor() }
+    // The cameraProviderFuture.addListener still needs the main executor for UI operations
+    val cameraSetupExecutor: Executor = remember { ContextCompat.getMainExecutor(context) }
 
     val previewView = remember { PreviewView(context) }
 
     LaunchedEffect(Unit) {
+        // Keep FIT_CENTER as per your preference for now, since this is your working base.
         previewView.scaleType = PreviewView.ScaleType.FIT_CENTER
     }
 
@@ -40,23 +48,37 @@ fun CameraPreviewView(
         cameraProviderFuture.addListener({
             val cameraProvider = cameraProviderFuture.get()
 
-            val targetResolution = Size(1280, 720) // 16:9 HD resolution (good for pose detection)
+            // You can keep targetResolution for the camera's internal processing (e.g., for ImageAnalysis).
+            // The PreviewView's scaleType will handle how it's displayed on screen.
+            val targetResolutionForPreview = Size(1280, 720) // For visual preview
+            val targetResolutionForAnalysis = Size(1280, 720) // For image processing (can be different)
 
             val preview = Preview.Builder()
-                .setTargetResolution(targetResolution)
+                .setTargetResolution(targetResolutionForPreview)
                 .build()
                 .also {
                     it.setSurfaceProvider(previewView.surfaceProvider)
                 }
 
             val imageAnalysis = ImageAnalysis.Builder()
-                .setTargetResolution(targetResolution)
+                .setTargetResolution(targetResolutionForAnalysis)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
                 .also {
-                    it.setAnalyzer(executor) { imageProxy ->
+                    // Use the background analysisExecutor here
+                    it.setAnalyzer(analysisExecutor) { imageProxy ->
                         Log.d("CameraPreview", "Image Width: ${imageProxy.width}, Height: ${imageProxy.height}, Rotation: ${imageProxy.imageInfo.rotationDegrees}")
+
+                        // Pass the ImageProxy to your skeleton tracking logic.
+                        // IMPORTANT: Your `onImageAnalyzed` function MUST call `imageProxy.close()`
+                        // when it is done processing the image data.
+                        // If you do not close it, you will have memory leaks and performance issues.
                         onImageAnalyzed(imageProxy)
+
+                        // If your onImageAnalyzed function is synchronous and consumes the ImageProxy fully,
+                        // you can uncomment the line below.
+                        // However, it's safer to let the consumer (your skeleton tracking logic) handle closing.
+                        // imageProxy.close() // DO NOT UNCOMMENT THIS HERE IF ONIMAGEANALYZED IS ASYNCHRONOUS OR PASSES IT ON!
                     }
                 }
 
@@ -76,7 +98,7 @@ fun CameraPreviewView(
                 Log.e("CameraPreview", "Camera binding failed", e)
             }
 
-        }, executor)
+        }, cameraSetupExecutor) // Use the main executor for camera setup
     }
 
     AndroidView(
@@ -86,96 +108,3 @@ fun CameraPreviewView(
         }
     )
 }
-
-
-//package com.example.exerciseapp.ui.components
-//
-//import android.util.Log
-//import androidx.camera.core.AspectRatio
-//import androidx.camera.core.CameraSelector
-//import androidx.camera.core.ImageAnalysis
-//import androidx.camera.core.ImageProxy
-//import androidx.camera.core.Preview
-//import androidx.camera.lifecycle.ProcessCameraProvider
-//import androidx.camera.view.PreviewView
-//import androidx.compose.foundation.layout.fillMaxSize
-//import androidx.compose.runtime.Composable
-//import androidx.compose.runtime.LaunchedEffect
-//import androidx.compose.runtime.remember
-//import androidx.compose.ui.Modifier
-//import androidx.compose.ui.platform.LocalContext
-//import androidx.compose.ui.platform.LocalLifecycleOwner
-//import androidx.compose.ui.viewinterop.AndroidView
-//import androidx.core.content.ContextCompat
-//import java.util.concurrent.Executor
-//
-//@Composable
-//fun CameraPreviewView(
-//    lensFacing: Int = CameraSelector.LENS_FACING_FRONT,
-//    onImageAnalyzed: (ImageProxy) -> Unit
-//) {
-//    val context = LocalContext.current
-//    val lifecycleOwner = LocalLifecycleOwner.current
-//    val executor: Executor = remember { ContextCompat.getMainExecutor(context) }
-//
-//    val previewView = remember { PreviewView(context) }
-//
-//    LaunchedEffect(Unit) {
-//        previewView.scaleType = PreviewView.ScaleType.FIT_CENTER
-//    }
-//
-//    LaunchedEffect(lensFacing) {
-//        val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
-//
-//        cameraProviderFuture.addListener({
-//            val cameraProvider = cameraProviderFuture.get()
-//
-//            val targetAspectRatio = AspectRatio.RATIO_16_9 // Consistent aspect ratio
-//
-//            val preview = Preview.Builder()
-//                .setTargetAspectRatio(targetAspectRatio)
-//                .build()
-//                .also {
-//                    it.setSurfaceProvider(previewView.surfaceProvider)
-//                }
-//
-//            val imageAnalysis = ImageAnalysis.Builder()
-//                .setTargetAspectRatio(targetAspectRatio)
-//                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-//                .build()
-//                .also {
-//                    it.setAnalyzer(executor) { imageProxy ->
-//                        // *******************************************************************
-//                        // DEBUG LOG: Add this line here
-//                        Log.d("CameraPreview", "Image Width: ${imageProxy.width}, Height: ${imageProxy.height}, Rotation: ${imageProxy.imageInfo.rotationDegrees}")
-//                        // *******************************************************************
-//                        onImageAnalyzed(imageProxy)
-//                    }
-//                }
-//
-//            val cameraSelector = CameraSelector.Builder()
-//                .requireLensFacing(lensFacing)
-//                .build()
-//
-//            try {
-//                cameraProvider.unbindAll()
-//                cameraProvider.bindToLifecycle(
-//                    lifecycleOwner,
-//                    cameraSelector,
-//                    preview,
-//                    imageAnalysis
-//                )
-//            } catch (e: Exception) {
-//                Log.e("CameraPreview", "Camera binding failed", e)
-//            }
-//
-//        }, executor)
-//    }
-//
-//    AndroidView(
-//        modifier = Modifier.fillMaxSize(),
-//        factory = {
-//            previewView
-//        }
-//    )
-//}
