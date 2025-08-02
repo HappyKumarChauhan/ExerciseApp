@@ -63,6 +63,7 @@ dependencies {
 
     implementation(libs.androidx.runtime)
     implementation("androidx.compose.material:material-icons-extended")
+    implementation(libs.androidx.navigation.compose.android)
 
 
     testImplementation(libs.junit)
@@ -72,6 +73,7 @@ dependencies {
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
+
 
     // ✅ Required for ListenableFuture (used by CameraX)
     implementation("com.google.guava:guava:31.1-android")
