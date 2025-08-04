@@ -1,4 +1,3 @@
-// app/src/main/java/com/example/exerciseapp/ui/screens/SitToStandExerciseScreen.kt
 package com.example.exerciseapp.ui.screens
 
 import android.util.Log
@@ -38,14 +37,24 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlin.math.min
+import kotlin.math.max
 
-// (SitToStandExerciseViewModel code remains unchanged)
-class SitToStandExerciseViewModel(
-    private val standingAngle: Double,
-    private val sittingAngle: Double
+// Enum for Hand Raising Exercise Status
+enum class HandRaisingExerciseStatus {
+    ArmsDown, ArmsUp
+}
+
+// Repetition State for Rep Counting
+enum class RepState {
+    IDLE, ARMS_DOWN, ARMS_UP
+}
+
+class HandRaisingExerciseViewModel(
+    private val handDownAngle: Double,
+    private val handUpAngle: Double
 ) : ViewModel() {
     private val poseAnalyzer = PoseAnalyzer()
-    private val TAG = "SitToStandExerciseVM"
+    private val TAG = "HandRaisingExerciseVM"
 
     private val _poseUiState = MutableStateFlow(PoseUiState())
     val poseUiState: StateFlow<PoseUiState> = _poseUiState.asStateFlow()
@@ -53,27 +62,34 @@ class SitToStandExerciseViewModel(
     private val _repCount = MutableStateFlow(0)
     val repCount: StateFlow<Int> = _repCount.asStateFlow()
 
-    private val _exerciseStatus = MutableStateFlow<ExerciseStatus>(ExerciseStatus.Standing)
-    val exerciseStatus: StateFlow<ExerciseStatus> = _exerciseStatus.asStateFlow()
+    private val _exerciseStatus = MutableStateFlow<HandRaisingExerciseStatus>(HandRaisingExerciseStatus.ArmsDown)
+    val exerciseStatus: StateFlow<HandRaisingExerciseStatus> = _exerciseStatus.asStateFlow()
 
-    private val _countdownTime = MutableStateFlow(30)
+    private val _countdownTime = MutableStateFlow(30) // Default to 30 seconds
     val countdownTime: StateFlow<Int> = _countdownTime.asStateFlow()
 
     private val _isTimerRunning = MutableStateFlow(false)
     val isTimerRunning: StateFlow<Boolean> = _isTimerRunning.asStateFlow()
 
-    private val _preparationTime = MutableStateFlow(3)
+    private val _preparationTime = MutableStateFlow(3) // 3-second prep
     val preparationTime: StateFlow<Int> = _preparationTime.asStateFlow()
 
-    private val _jointAngles = MutableStateFlow<Map<String, Double>>(emptyMap())
-    val jointAngles: StateFlow<Map<String, Double>> = _jointAngles.asStateFlow()
+    private val _jointAngles = MutableStateFlow<Map<String, Double?>>(emptyMap())
+    val jointAngles: StateFlow<Map<String, Double?>> = _jointAngles.asStateFlow()
+
+    // NEW: State for the rep counting logic
+    private var repState by mutableStateOf(RepState.IDLE)
+
+    // NEW: Define thresholds dynamically based on calibrated values
+    private val thresholdTolerance = 20.0 // A tolerance of +/- 20 degrees for the zones
+    private val handDownZone = (handDownAngle - thresholdTolerance)..(handDownAngle + thresholdTolerance)
+    private val handUpZone = (handUpAngle - thresholdTolerance)..(handUpAngle + thresholdTolerance)
 
     private val CRITICAL_EXERCISE_JOINTS = listOf(
-        PoseLandmark.LEFT_HIP, PoseLandmark.RIGHT_HIP,
-        PoseLandmark.LEFT_KNEE, PoseLandmark.RIGHT_KNEE,
-        PoseLandmark.LEFT_ANKLE, PoseLandmark.RIGHT_ANKLE,
         PoseLandmark.LEFT_SHOULDER, PoseLandmark.RIGHT_SHOULDER,
-        PoseLandmark.NOSE
+        PoseLandmark.LEFT_WRIST, PoseLandmark.RIGHT_WRIST,
+        PoseLandmark.LEFT_HIP, PoseLandmark.RIGHT_HIP,
+        PoseLandmark.NOSE // Ensure head is visible
     )
 
     private val EXERCISE_MIN_JOINT_LIKELIHOOD = 0.60f
@@ -84,6 +100,12 @@ class SitToStandExerciseViewModel(
     private val EXERCISE_MIN_PERSON_HEIGHT_RATIO = 0.25f
     private val EXERCISE_MAX_PERSON_HEIGHT_RATIO = 0.99f
 
+    init {
+        Log.d(TAG, "Initialized with: Hand Down Angle: $handDownAngle, Hand Up Angle: $handUpAngle")
+        Log.d(TAG, "Hand Down Zone: $handDownZone")
+        Log.d(TAG, "Hand Up Zone: $handUpZone")
+    }
+
     fun startPreparationTimer() {
         _preparationTime.value = 3
         _isTimerRunning.value = false
@@ -92,6 +114,7 @@ class SitToStandExerciseViewModel(
     fun startExerciseTimer() {
         _isTimerRunning.value = true
         _countdownTime.value = 30
+        repState = RepState.ARMS_DOWN // Initialize rep state when exercise starts
     }
 
     fun decrementPreparationTime() {
@@ -114,7 +137,7 @@ class SitToStandExerciseViewModel(
             val currentImageHeight = imageProxy.height
             var currentBoundaryStatus = BoundaryStatus.RED
             var personDisplayBoundingBox: Rect? = null
-            val newAngles = mutableMapOf<String, Double>()
+            val newAngles = mutableMapOf<String, Double?>()
 
             if (pose != null && pose.allPoseLandmarks.isNotEmpty()) {
                 var minXRaw = Float.MAX_VALUE
@@ -134,9 +157,7 @@ class SitToStandExerciseViewModel(
                 }
 
                 if (anyLandmarkDetectedForBox) {
-                    val scaleX = currentCanvasWidth / currentImageWidth.toFloat()
-                    val scaleY = currentCanvasHeight / currentImageHeight.toFloat()
-                    val scaleFactor = minOf(scaleX, scaleY)
+                    val scaleFactor = max(currentCanvasWidth / currentImageWidth.toFloat(), currentCanvasHeight / currentImageHeight.toFloat())
                     val scaledImageWidth = currentImageWidth * scaleFactor
                     val scaledImageHeight = currentImageHeight * scaleFactor
                     val offsetX = (currentCanvasWidth - scaledImageWidth) / 2
@@ -178,47 +199,52 @@ class SitToStandExerciseViewModel(
                     currentBoundaryStatus = BoundaryStatus.GREEN
                 }
 
-                val hipAngle = PoseUtils.calculateAngle(
-                    pose, PoseLandmark.LEFT_KNEE, PoseLandmark.LEFT_HIP, PoseLandmark.LEFT_SHOULDER
-                ) ?: PoseUtils.calculateAngle(
-                    pose, PoseLandmark.RIGHT_KNEE, PoseLandmark.RIGHT_HIP, PoseLandmark.RIGHT_SHOULDER
+                // NEW LOGIC: Calculate average arm angle using the vertical angle method
+                val leftArmAngle = PoseUtils.calculateVerticalAngle(
+                    pose, PoseLandmark.LEFT_SHOULDER, PoseLandmark.LEFT_WRIST
+                )
+                val rightArmAngle = PoseUtils.calculateVerticalAngle(
+                    pose, PoseLandmark.RIGHT_SHOULDER, PoseLandmark.RIGHT_WRIST
                 )
 
-                val kneeAngle = PoseUtils.calculateAngle(
-                    pose, PoseLandmark.LEFT_HIP, PoseLandmark.LEFT_KNEE, PoseLandmark.LEFT_ANKLE
-                ) ?: PoseUtils.calculateAngle(
-                    pose, PoseLandmark.RIGHT_HIP, PoseLandmark.RIGHT_KNEE, PoseLandmark.RIGHT_ANKLE
-                )
+                val averageArmAngle = if (leftArmAngle != null && rightArmAngle != null) {
+                    (leftArmAngle + rightArmAngle) / 2
+                } else leftArmAngle ?: rightArmAngle
 
-                if (hipAngle != null) {
-                    newAngles["Hip"] = hipAngle
-                }
-                if (kneeAngle != null) {
-                    newAngles["Knee"] = kneeAngle
-                }
+                newAngles["Arm"] = averageArmAngle
 
                 if (currentBoundaryStatus == BoundaryStatus.GREEN && _isTimerRunning.value) {
-                    if (hipAngle != null) {
-                        val isStanding = hipAngle >= standingAngle
-                        val isSitting = hipAngle <= sittingAngle
-
-                        when (_exerciseStatus.value) {
-                            is ExerciseStatus.Standing -> {
-                                if (isSitting) {
-                                    Log.d(TAG, "Repetition Logic: User is sitting. Waiting for stand up.")
-                                    _exerciseStatus.value = ExerciseStatus.Sitting
+                    if (averageArmAngle != null) {
+                        // NEW LOGIC: Repetition logic using a state machine and dynamic zones
+                        when (repState) {
+                            RepState.ARMS_DOWN -> {
+                                // Check if arms are now in the 'UP' zone
+                                if (averageArmAngle in handUpZone) {
+                                    Log.d(TAG, "Repetition Logic: Arms are now UP. Changing state.")
+                                    repState = RepState.ARMS_UP
+                                    _exerciseStatus.value = HandRaisingExerciseStatus.ArmsUp
                                 }
                             }
-                            is ExerciseStatus.Sitting -> {
-                                if (isStanding) {
-                                    Log.d(TAG, "Repetition Logic: User stood up. Incrementing rep.")
+                            RepState.ARMS_UP -> {
+                                // Check if arms are now back in the 'DOWN' zone
+                                if (averageArmAngle in handDownZone) {
+                                    Log.d(TAG, "Repetition Logic: Arms are now DOWN. Incrementing rep.")
                                     _repCount.update { it + 1 }
-                                    _exerciseStatus.value = ExerciseStatus.Standing
+                                    repState = RepState.ARMS_DOWN
+                                    _exerciseStatus.value = HandRaisingExerciseStatus.ArmsDown
+                                }
+                            }
+                            RepState.IDLE -> {
+                                // If the state is idle, check if the user is in the "down" position to begin
+                                if (averageArmAngle in handDownZone) {
+                                    Log.d(TAG, "Repetition Logic: Starting exercise in Arms Down state.")
+                                    repState = RepState.ARMS_DOWN
+                                    _exerciseStatus.value = HandRaisingExerciseStatus.ArmsDown
                                 }
                             }
                         }
                     } else {
-                        Log.w(TAG, "Hip angle could not be calculated. Rep logic paused.")
+                        Log.w(TAG, "Arm angle could not be calculated. Rep logic paused.")
                     }
                 }
             } else {
@@ -240,21 +266,30 @@ class SitToStandExerciseViewModel(
     }
 }
 
-sealed class ExerciseStatus {
-    object Standing : ExerciseStatus()
-    object Sitting : ExerciseStatus()
+// ViewModel Factory for Hand Raising Exercise
+class HandRaisingExerciseViewModelFactory(
+    private val handDownAngle: Double,
+    private val handUpAngle: Double
+) : ViewModelProvider.Factory {
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        if (modelClass.isAssignableFrom(HandRaisingExerciseViewModel::class.java)) {
+            @Suppress("UNCHECKED_CAST")
+            return HandRaisingExerciseViewModel(handDownAngle, handUpAngle) as T
+        }
+        throw IllegalArgumentException("Unknown ViewModel class")
+    }
 }
 
+
 @Composable
-fun SitToStandExerciseScreen(
+fun HandRaisingExerciseScreen(
     navController: NavController,
-    standingAngle: Double,
-    sittingAngle: Double,
-    viewModel: SitToStandExerciseViewModel = viewModel(factory = SitToStandExerciseViewModelFactory(standingAngle, sittingAngle))
+    handDownAngle: Double,
+    handUpAngle: Double,
+    viewModel: HandRaisingExerciseViewModel = viewModel(factory = HandRaisingExerciseViewModelFactory(handDownAngle, handUpAngle))
 ) {
     var lensFacing by remember { mutableStateOf(CameraSelector.LENS_FACING_FRONT) }
 
-    // CRITICAL FIX 1: New state variables to hold PreviewView's dimensions and scale type
     var previewViewSize by remember { mutableStateOf(IntSize.Zero) }
     var previewScaleType by remember { mutableStateOf(PreviewView.ScaleType.FILL_CENTER) }
 
@@ -263,6 +298,7 @@ fun SitToStandExerciseScreen(
     val countdownTime by viewModel.countdownTime.collectAsState()
     val isTimerRunning by viewModel.isTimerRunning.collectAsState()
     val preparationTime by viewModel.preparationTime.collectAsState()
+    val exerciseStatus by viewModel.exerciseStatus.collectAsState()
 
     var isPreparationDone by remember { mutableStateOf(false) }
 
@@ -283,7 +319,7 @@ fun SitToStandExerciseScreen(
                 viewModel.decrementCountdown()
             }
             navController.navigate("exercise_completed/$repCount") {
-                popUpTo("sit_to_stand_exercise/{standingAngle}/{sittingAngle}") {
+                popUpTo("hand_raising_exercise/{handDownAngle}/{handUpAngle}") {
                     inclusive = true
                 }
             }
@@ -291,12 +327,10 @@ fun SitToStandExerciseScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // CRITICAL FIX 2: Remove BoxWithConstraints and use the new state variables instead.
         CameraPreviewView(
             modifier = Modifier.fillMaxSize(),
             lensFacing = lensFacing,
             onImageAnalyzed = { imageProxy ->
-                // CRITICAL FIX 3: Pass the new state dimensions to the ViewModel
                 viewModel.processImageProxy(
                     imageProxy,
                     lensFacing,
@@ -304,7 +338,6 @@ fun SitToStandExerciseScreen(
                     previewViewSize.height.toFloat()
                 )
             },
-            // CRITICAL FIX 4: Pass the new callback to CameraPreviewView
             onPreviewViewSizeChanged = { size, scaleType ->
                 previewViewSize = size
                 previewScaleType = scaleType
@@ -320,7 +353,6 @@ fun SitToStandExerciseScreen(
             boundaryStatus = poseUiState.boundaryStatus,
             personBoundingBox = poseUiState.personBoundingBox,
             modifier = Modifier.fillMaxSize(),
-            // CRITICAL FIX 5: Pass the new state variables to PoseOverlay
             previewViewSize = previewViewSize,
             previewScaleType = previewScaleType
         )
@@ -341,7 +373,7 @@ fun SitToStandExerciseScreen(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = "Sit to Stand",
+                        text = "Hand Raising",
                         fontSize = 24.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color.White
@@ -410,28 +442,5 @@ fun SitToStandExerciseScreen(
                 .align(Alignment.BottomEnd)
                 .padding(bottom = 100.dp, end = 16.dp)
         )
-    }
-}
-
-@Composable
-fun CountdownTimer(time: Int) {
-    Text(
-        text = "Time: ${"%02d".format(time)}",
-        fontSize = 24.sp,
-        fontWeight = FontWeight.Bold,
-        color = Color.White
-    )
-}
-
-class SitToStandExerciseViewModelFactory(
-    private val standingAngle: Double,
-    private val sittingAngle: Double
-) : ViewModelProvider.Factory {
-    override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        if (modelClass.isAssignableFrom(SitToStandExerciseViewModel::class.java)) {
-            @Suppress("UNCHECKED_CAST")
-            return SitToStandExerciseViewModel(standingAngle, sittingAngle) as T
-        }
-        throw IllegalArgumentException("Unknown ViewModel class")
     }
 }

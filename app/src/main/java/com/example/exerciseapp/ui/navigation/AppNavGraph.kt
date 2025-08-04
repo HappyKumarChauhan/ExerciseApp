@@ -1,4 +1,3 @@
-// app/src/main/java/com/example/exerciseapp/ui/navigation/AppNavGraph.kt
 package com.example.exerciseapp.ui.navigation
 
 import androidx.compose.runtime.Composable
@@ -12,7 +11,9 @@ import com.example.exerciseapp.ui.screens.FreeMovementTrackingScreen
 import com.example.exerciseapp.ui.screens.SitToStandCalibrationScreen
 import com.example.exerciseapp.ui.screens.SitToStandExerciseScreen
 import com.example.exerciseapp.ui.screens.WelcomeScreen
-import com.example.exerciseapp.ui.screens.ExerciseCompletedScreen // Import the new screen
+import com.example.exerciseapp.ui.screens.ExerciseCompletedScreen
+import com.example.exerciseapp.ui.screens.HandRaisingCalibrationScreen // NEW Import
+import com.example.exerciseapp.ui.screens.HandRaisingExerciseScreen // NEW Import
 
 @Composable
 fun AppNavGraph() {
@@ -28,7 +29,6 @@ fun AppNavGraph() {
         composable("sit_to_stand_calibration") {
             SitToStandCalibrationScreen(navController = navController)
         }
-        // Route for Sit to Stand Exercise, accepting angles as arguments
         composable(
             route = "sit_to_stand_exercise/{standingAngle}/{sittingAngle}",
             arguments = listOf(
@@ -46,6 +46,26 @@ fun AppNavGraph() {
         }
         composable("free_movement_tracking") {
             FreeMovementTrackingScreen(navController = navController)
+        }
+        // New composable for Hand Raising Calibration
+        composable("hand_raising_calibration") { // NEW Route
+            HandRaisingCalibrationScreen(navController = navController)
+        }
+        // New composable for Hand Raising Exercise
+        composable( // NEW Route
+            route = "hand_raising_exercise/{handDownAngle}/{handUpAngle}",
+            arguments = listOf(
+                navArgument("handDownAngle") { type = NavType.FloatType },
+                navArgument("handUpAngle") { type = NavType.FloatType }
+            )
+        ) { backStackEntry ->
+            val handDownAngle = backStackEntry.arguments?.getFloat("handDownAngle") ?: 0f
+            val handUpAngle = backStackEntry.arguments?.getFloat("handUpAngle") ?: 0f
+            HandRaisingExerciseScreen(
+                navController = navController,
+                handDownAngle = handDownAngle.toDouble(),
+                handUpAngle = handUpAngle.toDouble()
+            )
         }
         // New composable for the Exercise Completed screen
         composable(

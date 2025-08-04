@@ -1,4 +1,3 @@
-// app/src/main/java/com/example/exerciseapp/ui/screens/ExerciseSelectionScreen.kt
 package com.example.exerciseapp.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
@@ -47,6 +46,16 @@ fun ExerciseSelectionScreen(navController: NavController) {
                 .height(60.dp)
         ) {
             Text("Sit to Stand", fontSize = 20.sp)
+        }
+        Spacer(modifier = Modifier.height(24.dp))
+        // NEW: Button for Hand Raising
+        Button(
+            onClick = { navController.navigate("hand_raising_calibration") },
+            modifier = Modifier
+                .fillMaxWidth(0.8f)
+                .height(60.dp)
+        ) {
+            Text("Hand Raising", fontSize = 20.sp)
         }
         Spacer(modifier = Modifier.height(24.dp))
         Button(

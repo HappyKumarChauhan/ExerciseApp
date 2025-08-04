@@ -1,4 +1,3 @@
-// app/src/main/java/com/example/exerciseapp/ui/screens/SitToStandCalibrationScreen.kt
 package com.example.exerciseapp.ui.screens
 
 import android.util.Log
@@ -38,24 +37,39 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlin.math.min
+import kotlin.math.max // Needed for coordinate transformation
 
+// Enum for Hand Raising Calibration Stages
+enum class HandRaisingCalibrationStage {
+    HAND_DOWN, HAND_UP
+}
 
-class SitToStandCalibrationViewModel : ViewModel() {
+// Sealed class for Hand Raising Calibration State
+sealed class HandRaisingCalibrationState {
+    object Idle : HandRaisingCalibrationState()
+    data class CalibratingHandDown(val countdownSec: Long) : HandRaisingCalibrationState()
+    data class CalibratingHandUp(val countdownSec: Long) : HandRaisingCalibrationState()
+    object HandDownCalibrated : HandRaisingCalibrationState()
+    object HandUpCalibrated : HandRaisingCalibrationState()
+    data class Failed(val message: String) : HandRaisingCalibrationState()
+}
+
+class HandRaisingCalibrationViewModel  : ViewModel() {
     private val poseAnalyzer = PoseAnalyzer()
-    private val TAG = "SitToStandCalibVM"
+    private val TAG = "HandRaiseCalibVM"
 
     private val _poseUiState = MutableStateFlow(PoseUiState())
     val poseUiState: StateFlow<PoseUiState> = _poseUiState.asStateFlow()
 
-    private val _calibrationState = MutableStateFlow<CalibrationState>(CalibrationState.Idle)
-    val calibrationState: StateFlow<CalibrationState> = _calibrationState.asStateFlow()
+    private val _calibrationState = MutableStateFlow<HandRaisingCalibrationState>(HandRaisingCalibrationState.Idle)
+    val calibrationState: StateFlow<HandRaisingCalibrationState> = _calibrationState.asStateFlow()
 
-    private val _instructionMessage = MutableStateFlow("Press 'Calibrate Standing' to begin.")
+    private val _instructionMessage = MutableStateFlow("Press 'Calibrate Hands Down' to begin.")
     val instructionMessage: StateFlow<String> = _instructionMessage.asStateFlow()
 
-    var standingAngle by mutableDoubleStateOf(0.0)
+    var handDownAngle by mutableDoubleStateOf(0.0)
         private set
-    var sittingAngle by mutableDoubleStateOf(0.0)
+    var handUpAngle by mutableDoubleStateOf(0.0)
         private set
 
     private var hasAchievedGreenZoneForHold by mutableStateOf(false)
@@ -64,29 +78,25 @@ class SitToStandCalibrationViewModel : ViewModel() {
 
     val CALIBRATION_HOLD_TIME_MS = 2000L
     private val CALIBRATION_GREEN_ZONE_GRACE_PERIOD_MS = 750L
-    private val MIN_CALIBRATION_ANGLE_DIFF = 10.0
+    // It's better to increase this difference slightly with the new calculation method
+    private val MIN_CALIBRATION_ANGLE_DIFF = 40.0
 
+    // Critical joints for Hand Raising (e.g., shoulders, elbows, wrists)
     private val CRITICAL_INITIAL_JOINTS = listOf(
-        PoseLandmark.NOSE, PoseLandmark.LEFT_EYE, PoseLandmark.RIGHT_EYE,
-        PoseLandmark.LEFT_EAR, PoseLandmark.RIGHT_EAR,
+        PoseLandmark.NOSE,
         PoseLandmark.LEFT_SHOULDER, PoseLandmark.RIGHT_SHOULDER,
         PoseLandmark.LEFT_ELBOW, PoseLandmark.RIGHT_ELBOW,
         PoseLandmark.LEFT_WRIST, PoseLandmark.RIGHT_WRIST,
-        PoseLandmark.LEFT_HIP, PoseLandmark.RIGHT_HIP,
-        PoseLandmark.LEFT_KNEE, PoseLandmark.RIGHT_KNEE,
-        PoseLandmark.LEFT_ANKLE, PoseLandmark.RIGHT_ANKLE,
-        PoseLandmark.LEFT_HEEL, PoseLandmark.RIGHT_HEEL,
-        PoseLandmark.LEFT_FOOT_INDEX, PoseLandmark.RIGHT_FOOT_INDEX
+        PoseLandmark.LEFT_HIP, PoseLandmark.RIGHT_HIP
     )
 
-    private val CALIBRATION_MIN_JOINT_LIKELIHOOD = 0.60f
-    private val CALIBRATION_IDEAL_ZONE_PADDING_X = 0.20f
-    private val CALIBRATION_IDEAL_ZONE_PADDING_Y = 0.15f
-    private val CALIBRATION_MIN_PERSON_WIDTH_RATIO = 0.08f
+    private val CALIBRATION_MIN_JOINT_LIKELIHOOD = 0.50f
+    private val CALIBRATION_IDEAL_ZONE_PADDING_X = 0.10f
+    private val CALIBRATION_IDEAL_ZONE_PADDING_Y = 0.10f
+    private val CALIBRATION_MIN_PERSON_WIDTH_RATIO = 0.05f
     private val CALIBRATION_MAX_PERSON_WIDTH_RATIO = 0.98f
     private val CALIBRATION_MIN_PERSON_HEIGHT_RATIO = 0.25f
     private val CALIBRATION_MAX_PERSON_HEIGHT_RATIO = 0.99f
-
 
     fun processImageProxy(imageProxy: androidx.camera.core.ImageProxy, lensFacing: Int, currentCanvasWidth: Float, currentCanvasHeight: Float) {
         poseAnalyzer.detectPose(imageProxy) { pose ->
@@ -116,9 +126,8 @@ class SitToStandCalibrationViewModel : ViewModel() {
                 }
 
                 if (anyLandmarkDetectedForBox) {
-                    val scaleX = currentCanvasWidth / currentImageWidth.toFloat()
-                    val scaleY = currentCanvasHeight / currentImageHeight.toFloat()
-                    val scaleFactor = min(scaleX, scaleY)
+                    // For FILL_CENTER, calculate scale based on the larger ratio
+                    val scaleFactor = max(currentCanvasWidth / currentImageWidth.toFloat(), currentCanvasHeight / currentImageHeight.toFloat())
 
                     val scaledImageWidth = currentImageWidth * scaleFactor
                     val scaledImageHeight = currentImageHeight * scaleFactor
@@ -129,6 +138,7 @@ class SitToStandCalibrationViewModel : ViewModel() {
                     var transformedLeft = minXRaw * scaleFactor + offsetX
                     var transformedRight = maxXRaw * scaleFactor + offsetX
 
+                    // Flip X coordinate for front camera
                     if (lensFacing == CameraSelector.LENS_FACING_FRONT) {
                         val tempLeft = transformedLeft
                         transformedLeft = (currentCanvasWidth - transformedRight)
@@ -183,12 +193,12 @@ class SitToStandCalibrationViewModel : ViewModel() {
                             greenZoneHoldStartTime = 0L
                             greenZoneExitTime = 0L
                             Log.d(TAG, "Grace period expired. Resetting hold timer.")
-                            if (_calibrationState.value is CalibrationState.CalibratingStanding || _calibrationState.value is CalibrationState.CalibratingSitting) {
+                            if (_calibrationState.value is HandRaisingCalibrationState.CalibratingHandDown || _calibrationState.value is HandRaisingCalibrationState.CalibratingHandUp) {
                                 _instructionMessage.value = "Calibration interrupted! Keep your body fully in frame and stable."
                             }
                             currentBoundaryStatus = BoundaryStatus.RED
                         } else {
-                            currentBoundaryStatus = BoundaryStatus.GREEN
+                            currentBoundaryStatus = BoundaryStatus.GREEN // Still within grace period
                         }
                     } else {
                         currentBoundaryStatus = BoundaryStatus.RED
@@ -198,52 +208,65 @@ class SitToStandCalibrationViewModel : ViewModel() {
                 }
 
                 when (val state = _calibrationState.value) {
-                    is CalibrationState.CalibratingStanding -> {
-                        _instructionMessage.value = "STAND TALL & STILL for calibration."
+                    is HandRaisingCalibrationState.CalibratingHandDown -> {
+                        _instructionMessage.value = "HANDS DOWN & STILL for calibration."
                         if (hasAchievedGreenZoneForHold && (currentTime - greenZoneHoldStartTime >= CALIBRATION_HOLD_TIME_MS)) {
-                            val currentHipAngle = PoseUtils.calculateAngle(
-                                pose, PoseLandmark.LEFT_KNEE, PoseLandmark.LEFT_HIP, PoseLandmark.LEFT_SHOULDER
-                            ) ?: PoseUtils.calculateAngle(
-                                pose, PoseLandmark.RIGHT_KNEE, PoseLandmark.RIGHT_HIP, PoseLandmark.RIGHT_SHOULDER
+                            // Calculate angle for hands down. Using new vertical angle logic.
+                            val leftArmAngle = PoseUtils.calculateVerticalAngle(
+                                pose, PoseLandmark.LEFT_SHOULDER, PoseLandmark.LEFT_WRIST
+                            )
+                            val rightArmAngle = PoseUtils.calculateVerticalAngle(
+                                pose, PoseLandmark.RIGHT_SHOULDER, PoseLandmark.RIGHT_WRIST
                             )
 
-                            if (currentHipAngle != null) {
-                                standingAngle = currentHipAngle
-                                Log.d(TAG, "Standing angle calibrated: $standingAngle")
-                                _calibrationState.value = CalibrationState.StandingCalibrated
-                                _instructionMessage.value = "Standing Position Calibrated Successfully! Now Calibrate Sitting."
+                            val averageAngle = if (leftArmAngle != null && rightArmAngle != null) {
+                                (leftArmAngle + rightArmAngle) / 2
+                            } else leftArmAngle ?: rightArmAngle
+
+                            if (averageAngle != null) {
+                                handDownAngle = averageAngle
+                                Log.d(TAG, "Hand Down angle calibrated: $handDownAngle")
+                                _calibrationState.value = HandRaisingCalibrationState.HandDownCalibrated
+                                _instructionMessage.value = "Hands Down Calibrated! Now Calibrate Hands Up."
                             } else {
-                                _instructionMessage.value = "Could not calculate hip angle for standing. Please adjust position."
-                                _calibrationState.value = CalibrationState.Idle
+                                _instructionMessage.value = "Could not calculate arm angle for hands down. Please adjust position."
+                                _calibrationState.value = HandRaisingCalibrationState.Idle // Go back to idle or try again
                             }
                             hasAchievedGreenZoneForHold = false
                             greenZoneHoldStartTime = 0L
                             greenZoneExitTime = 0L
                         }
                     }
-                    is CalibrationState.CalibratingSitting -> {
-                        _instructionMessage.value = "SIT DOWN & STILL for calibration."
+                    is HandRaisingCalibrationState.CalibratingHandUp -> {
+                        _instructionMessage.value = "HANDS UP & STILL for calibration."
                         if (hasAchievedGreenZoneForHold && (currentTime - greenZoneHoldStartTime >= CALIBRATION_HOLD_TIME_MS)) {
-                            val currentHipAngle = PoseUtils.calculateAngle(
-                                pose, PoseLandmark.LEFT_KNEE, PoseLandmark.LEFT_HIP, PoseLandmark.LEFT_SHOULDER
-                            ) ?: PoseUtils.calculateAngle(
-                                pose, PoseLandmark.RIGHT_KNEE, PoseLandmark.RIGHT_HIP, PoseLandmark.RIGHT_SHOULDER
+                            // Calculate angle for hands up. Using new vertical angle logic.
+                            val leftArmAngle = PoseUtils.calculateVerticalAngle(
+                                pose, PoseLandmark.LEFT_SHOULDER, PoseLandmark.LEFT_WRIST
+                            )
+                            val rightArmAngle = PoseUtils.calculateVerticalAngle(
+                                pose, PoseLandmark.RIGHT_SHOULDER, PoseLandmark.RIGHT_WRIST
                             )
 
-                            if (currentHipAngle != null) {
-                                sittingAngle = currentHipAngle
-                                Log.d(TAG, "Sitting angle calibrated: $sittingAngle")
+                            val averageAngle = if (leftArmAngle != null && rightArmAngle != null) {
+                                (leftArmAngle + rightArmAngle) / 2
+                            } else leftArmAngle ?: rightArmAngle
 
-                                if (standingAngle != 0.0 && (standingAngle - sittingAngle) > MIN_CALIBRATION_ANGLE_DIFF) {
-                                    _calibrationState.value = CalibrationState.SittingCalibrated
+                            if (averageAngle != null) {
+                                handUpAngle = averageAngle
+                                Log.d(TAG, "Hand Up angle calibrated: $handUpAngle")
+
+                                // Validation: Ensure there's a significant difference between down and up angles
+                                if (Math.abs(handDownAngle - handUpAngle) > MIN_CALIBRATION_ANGLE_DIFF) {
+                                    _calibrationState.value = HandRaisingCalibrationState.HandUpCalibrated
                                     _instructionMessage.value = "Calibration Complete! Ready for Exercise."
                                 } else {
-                                    _instructionMessage.value = "Sitting calibration failed. Angle difference is too small. Try again."
-                                    _calibrationState.value = CalibrationState.StandingCalibrated
+                                    _instructionMessage.value = "Hands Up calibration failed. Angle difference is too small. Ensure arms are fully raised."
+                                    _calibrationState.value = HandRaisingCalibrationState.HandDownCalibrated
                                 }
                             } else {
-                                _instructionMessage.value = "Could not calculate hip angle for sitting. Please adjust position."
-                                _calibrationState.value = CalibrationState.StandingCalibrated
+                                _instructionMessage.value = "Could not calculate arm angle for hands up. Please adjust position."
+                                _calibrationState.value = HandRaisingCalibrationState.HandDownCalibrated
                             }
                             hasAchievedGreenZoneForHold = false
                             greenZoneHoldStartTime = 0L
@@ -257,7 +280,7 @@ class SitToStandCalibrationViewModel : ViewModel() {
                 hasAchievedGreenZoneForHold = false
                 greenZoneHoldStartTime = 0L
                 greenZoneExitTime = 0L
-                if (_calibrationState.value is CalibrationState.CalibratingStanding || _calibrationState.value is CalibrationState.CalibratingSitting) {
+                if (_calibrationState.value is HandRaisingCalibrationState.CalibratingHandDown || _calibrationState.value is HandRaisingCalibrationState.CalibratingHandUp) {
                     _instructionMessage.value = "No person detected. Ensure good lighting and move into the camera's view."
                 }
             }
@@ -267,7 +290,7 @@ class SitToStandCalibrationViewModel : ViewModel() {
                     pose = if (currentBoundaryStatus == BoundaryStatus.GREEN) pose else null,
                     imageWidth = currentImageWidth,
                     imageHeight = currentImageHeight,
-                    jointAngles = emptyMap(),
+                    jointAngles = emptyMap(), // Not displaying angles during calibration
                     boundaryStatus = currentBoundaryStatus,
                     personBoundingBox = personDisplayBoundingBox
                 )
@@ -276,10 +299,10 @@ class SitToStandCalibrationViewModel : ViewModel() {
         }
     }
 
-    fun startCalibration(stage: CalibrationStage) {
+    fun startCalibration(stage: HandRaisingCalibrationStage) {
         _calibrationState.value = when (stage) {
-            CalibrationStage.STANDING -> CalibrationState.CalibratingStanding(CALIBRATION_HOLD_TIME_MS / 1000)
-            CalibrationStage.SITTING -> CalibrationState.CalibratingSitting(CALIBRATION_HOLD_TIME_MS / 1000)
+            HandRaisingCalibrationStage.HAND_DOWN -> HandRaisingCalibrationState.CalibratingHandDown(CALIBRATION_HOLD_TIME_MS / 1000)
+            HandRaisingCalibrationStage.HAND_UP -> HandRaisingCalibrationState.CalibratingHandUp(CALIBRATION_HOLD_TIME_MS / 1000)
         }
         hasAchievedGreenZoneForHold = false
         greenZoneHoldStartTime = 0L
@@ -287,10 +310,10 @@ class SitToStandCalibrationViewModel : ViewModel() {
     }
 
     fun resetCalibration() {
-        _calibrationState.value = CalibrationState.Idle
-        _instructionMessage.value = "Press 'Calibrate Standing' to begin."
-        standingAngle = 0.0
-        sittingAngle = 0.0
+        _calibrationState.value = HandRaisingCalibrationState.Idle
+        _instructionMessage.value = "Press 'Calibrate Hands Down' to begin."
+        handDownAngle = 0.0
+        handUpAngle = 0.0
         hasAchievedGreenZoneForHold = false
         greenZoneHoldStartTime = 0L
         greenZoneExitTime = 0L
@@ -299,35 +322,20 @@ class SitToStandCalibrationViewModel : ViewModel() {
     fun updateCalibrationCountdown(newCountdown: Int) {
         _calibrationState.update { currentState ->
             when (currentState) {
-                is CalibrationState.CalibratingStanding -> currentState.copy(countdownSec = newCountdown.toLong())
-                is CalibrationState.CalibratingSitting -> currentState.copy(countdownSec = newCountdown.toLong())
+                is HandRaisingCalibrationState.CalibratingHandDown -> currentState.copy(countdownSec = newCountdown.toLong())
+                is HandRaisingCalibrationState.CalibratingHandUp -> currentState.copy(countdownSec = newCountdown.toLong())
                 else -> currentState
             }
         }
     }
 }
-
-enum class CalibrationStage {
-    STANDING, SITTING
-}
-
-sealed class CalibrationState {
-    object Idle : CalibrationState()
-    data class CalibratingStanding(val countdownSec: Long) : CalibrationState()
-    data class CalibratingSitting(val countdownSec: Long) : CalibrationState()
-    object StandingCalibrated : CalibrationState()
-    object SittingCalibrated : CalibrationState()
-    data class Failed(val message: String) : CalibrationState()
-}
-
 @Composable
-fun SitToStandCalibrationScreen(
+fun HandRaisingCalibrationScreen(
     navController: NavController,
-    viewModel: SitToStandCalibrationViewModel = viewModel()
+    viewModel: HandRaisingCalibrationViewModel = viewModel()
 ) {
     var lensFacing by remember { mutableStateOf(CameraSelector.LENS_FACING_FRONT) }
 
-    // CRITICAL FIX 1: New state variables to hold PreviewView's dimensions and scale type
     var previewViewSize by remember { mutableStateOf(IntSize.Zero) }
     var previewScaleType by remember { mutableStateOf(PreviewView.ScaleType.FILL_CENTER) }
 
@@ -339,8 +347,8 @@ fun SitToStandCalibrationScreen(
         mutableStateOf(
             if (poseUiState.boundaryStatus == BoundaryStatus.GREEN) {
                 when (calibrationState) {
-                    is CalibrationState.CalibratingStanding -> (calibrationState as CalibrationState.CalibratingStanding).countdownSec.toInt()
-                    is CalibrationState.CalibratingSitting -> (calibrationState as CalibrationState.CalibratingSitting).countdownSec.toInt()
+                    is HandRaisingCalibrationState.CalibratingHandDown -> (calibrationState as HandRaisingCalibrationState.CalibratingHandDown).countdownSec.toInt()
+                    is HandRaisingCalibrationState.CalibratingHandUp -> (calibrationState as HandRaisingCalibrationState.CalibratingHandUp).countdownSec.toInt()
                     else -> 0
                 }
             } else 0
@@ -349,7 +357,7 @@ fun SitToStandCalibrationScreen(
 
     LaunchedEffect(poseUiState.boundaryStatus, calibrationState) {
         if (poseUiState.boundaryStatus == BoundaryStatus.GREEN &&
-            (calibrationState is CalibrationState.CalibratingStanding || calibrationState is CalibrationState.CalibratingSitting)
+            (calibrationState is HandRaisingCalibrationState.CalibratingHandDown || calibrationState is HandRaisingCalibrationState.CalibratingHandUp)
         ) {
             val startTime = System.currentTimeMillis()
             while (System.currentTimeMillis() - startTime < viewModel.CALIBRATION_HOLD_TIME_MS) {
@@ -363,14 +371,10 @@ fun SitToStandCalibrationScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // BoxWithConstraints is no longer needed here since the PreviewView's dimensions
-        // are now provided via the callback from CameraPreviewView.
         CameraPreviewView(
             modifier = Modifier.fillMaxSize(),
             lensFacing = lensFacing,
             onImageAnalyzed = { imageProxy ->
-                // The VM's processImageProxy function still needs the canvas dimensions
-                // so we pass the latest ones from our state.
                 viewModel.processImageProxy(
                     imageProxy,
                     lensFacing,
@@ -378,7 +382,6 @@ fun SitToStandCalibrationScreen(
                     previewViewSize.height.toFloat()
                 )
             },
-            // CRITICAL FIX 2: Pass the new callback to CameraPreviewView
             onPreviewViewSizeChanged = { size, scaleType ->
                 previewViewSize = size
                 previewScaleType = scaleType
@@ -390,11 +393,10 @@ fun SitToStandCalibrationScreen(
             imageWidth = poseUiState.imageWidth,
             imageHeight = poseUiState.imageHeight,
             lensFacing = lensFacing,
-            jointAngles = emptyMap(),
+            jointAngles = emptyMap(), // Not displaying angles during calibration
             boundaryStatus = poseUiState.boundaryStatus,
             personBoundingBox = poseUiState.personBoundingBox,
             modifier = Modifier.fillMaxSize(),
-            // CRITICAL FIX 3: Pass the new state variables to PoseOverlay
             previewViewSize = previewViewSize,
             previewScaleType = previewScaleType
         )
@@ -410,7 +412,7 @@ fun SitToStandCalibrationScreen(
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = "Sit to Stand Calibration",
+                    text = "Hand Raising Calibration",
                     fontSize = 24.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color.White
@@ -421,7 +423,7 @@ fun SitToStandCalibrationScreen(
                     fontSize = 16.sp,
                     color = Color.White.copy(alpha = 0.8f)
                 )
-                if ((calibrationState is CalibrationState.CalibratingStanding || calibrationState is CalibrationState.CalibratingSitting) &&
+                if ((calibrationState is HandRaisingCalibrationState.CalibratingHandDown || calibrationState is HandRaisingCalibrationState.CalibratingHandUp) &&
                     poseUiState.boundaryStatus == BoundaryStatus.GREEN && countdownDisplay > 0
                 ) {
                     Spacer(modifier = Modifier.height(16.dp))
@@ -441,10 +443,10 @@ fun SitToStandCalibrationScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Button(
-                onClick = { viewModel.startCalibration(CalibrationStage.STANDING) },
-                enabled = calibrationState is CalibrationState.Idle || calibrationState is CalibrationState.Failed || calibrationState is CalibrationState.StandingCalibrated,
+                onClick = { viewModel.startCalibration(HandRaisingCalibrationStage.HAND_DOWN) },
+                enabled = calibrationState is HandRaisingCalibrationState.Idle || calibrationState is HandRaisingCalibrationState.Failed || calibrationState is HandRaisingCalibrationState.HandDownCalibrated,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (calibrationState is CalibrationState.StandingCalibrated) Color.Green.copy(alpha = 0.6f) else Color.White.copy(alpha = 0.2f),
+                    containerColor = if (calibrationState is HandRaisingCalibrationState.HandDownCalibrated) Color.Green.copy(alpha = 0.6f) else Color.White.copy(alpha = 0.2f),
                     contentColor = Color.White,
                     disabledContainerColor = Color.White.copy(alpha = 0.1f),
                     disabledContentColor = Color.Gray
@@ -453,14 +455,14 @@ fun SitToStandCalibrationScreen(
                     .fillMaxWidth()
                     .height(48.dp)
             ) {
-                Text("Calibrate Standing (${"%.1f".format(viewModel.standingAngle)}°)", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text("Calibrate Hands Down (${"%.1f".format(viewModel.handDownAngle)}°)", fontSize = 16.sp, fontWeight = FontWeight.Bold)
             }
             Spacer(modifier = Modifier.height(8.dp))
             Button(
-                onClick = { viewModel.startCalibration(CalibrationStage.SITTING) },
-                enabled = calibrationState is CalibrationState.StandingCalibrated,
+                onClick = { viewModel.startCalibration(HandRaisingCalibrationStage.HAND_UP) },
+                enabled = calibrationState is HandRaisingCalibrationState.HandDownCalibrated,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (calibrationState is CalibrationState.SittingCalibrated) Color.Green.copy(alpha = 0.6f) else Color.White.copy(alpha = 0.2f),
+                    containerColor = if (calibrationState is HandRaisingCalibrationState.HandUpCalibrated) Color.Green.copy(alpha = 0.6f) else Color.White.copy(alpha = 0.2f),
                     contentColor = Color.White,
                     disabledContainerColor = Color.White.copy(alpha = 0.1f),
                     disabledContentColor = Color.Gray
@@ -469,14 +471,14 @@ fun SitToStandCalibrationScreen(
                     .fillMaxWidth()
                     .height(48.dp)
             ) {
-                Text("Calibrate Sitting (${"%.1f".format(viewModel.sittingAngle)}°)", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text("Calibrate Hands Up (${"%.1f".format(viewModel.handUpAngle)}°)", fontSize = 16.sp, fontWeight = FontWeight.Bold)
             }
             Spacer(modifier = Modifier.height(8.dp))
             Button(
                 onClick = {
-                    navController.navigate("sit_to_stand_exercise/${viewModel.standingAngle.toFloat()}/${viewModel.sittingAngle.toFloat()}")
+                    navController.navigate("hand_raising_exercise/${viewModel.handDownAngle.toFloat()}/${viewModel.handUpAngle.toFloat()}")
                 },
-                enabled = calibrationState is CalibrationState.SittingCalibrated,
+                enabled = calibrationState is HandRaisingCalibrationState.HandUpCalibrated,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color(0xFF673AB7),
                     contentColor = Color.White,
